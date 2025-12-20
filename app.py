@@ -6,7 +6,7 @@ import requests
 # =========================================================
 
 # 👇 여기에 사용자님의 키를 직접 붙여넣으세요 (따옴표 안에!)
-DIRECT_API_KEY = "PASTE_YOUR_KEY_HERE" 
+DIRECT_API_KEY = "AIzaSyCxP-itFny7RP6vexmgjcvsuhHwevtp-Qc" 
 
 st.set_page_config(page_title="FINAL TEST")
 st.title("🚨 생존 신고 테스트")
