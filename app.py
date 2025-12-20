@@ -9,28 +9,21 @@ import urllib.parse
 from bs4 import BeautifulSoup
 
 # ==============================================================================
-# [1] 설정
+# [1] 설정 (Lite 모드)
 # ==============================================================================
-st.set_page_config(page_title="Strategic AI Partner", layout="wide")
+st.set_page_config(page_title="Strategic AI Partner (Lite)", layout="wide")
 
 if "GOOGLE_API_KEY" not in st.secrets:
     st.error("🚨 Secrets 설정이 비어있습니다!")
-    st.info("Streamlit 사이트 설정(Settings) -> Secrets 메뉴에 GOOGLE_API_KEY를 넣어주세요.")
     st.stop()
 
 API_KEY = st.secrets["GOOGLE_API_KEY"]
 
-# 👇 [요청하신 전략 적용]
-# 1순위: 2.5 (Target)
-# 2순위: 2.0 계열 (Backup)
-RELAY_MODELS = [
-    "gemini-2.5-flash",       # 메인 타겟
-    "gemini-2.0-flash-exp",   # 1차 보조
-    "gemini-2.0-flash"        # 2차 보조 (비상용)
-]
+# 전략: 2.5 -> 2.0 (그대로 유지하되 가볍게 요청)
+RELAY_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash-exp"]
 
 # ==============================================================================
-# [2] AI 및 데이터 엔진
+# [2] AI 엔진 (다이어트 버전)
 # ==============================================================================
 def clean_text(text):
     if not text: return ""
@@ -39,37 +32,31 @@ def clean_text(text):
 def call_ai_relay(prompt):
     error_logs = [] 
     
-    # 모델 리스트를 순서대로 실행 (릴레이)
     for model in RELAY_MODELS:
-        # v1beta 사용
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={API_KEY}"
         headers = {'Content-Type': 'application/json'}
         data = {"contents": [{"parts": [{"text": prompt}]}]}
         
         try:
-            # 타임아웃 30초
             res = requests.post(url, headers=headers, json=data, timeout=30)
             
             if res.status_code == 200:
-                # 성공하면 바로 결과와 모델명 리턴하고 종료
                 return res.json()['candidates'][0]['content']['parts'][0]['text'], model
             
             elif res.status_code == 429:
-                # 2.5가 과부하면 -> 2초만 쉬고 바로 2.0으로 넘김 (기다리는 시간 단축)
-                time.sleep(2)
-                error_logs.append(f"[{model}] 429 과부하 -> 다음 타자 교체")
+                # [수정] 대기 시간을 10초로 대폭 늘림 (확실하게 쉬었다 가기)
+                time.sleep(10)
+                error_logs.append(f"[{model}] 과부하 -> 10초 대기 후 교체")
                 continue
             
             else:
-                # 404나 기타 에러면 -> 바로 다음 모델로 넘김
-                error_logs.append(f"[{model}] Error {res.status_code}: {res.text}")
+                error_logs.append(f"[{model}] Error {res.status_code}")
                 continue
                 
         except Exception as e:
-            error_logs.append(f"[{model}] 통신 오류: {str(e)}")
+            error_logs.append(f"[{model}] Error: {str(e)}")
             continue
             
-    # 여기까지 왔다는 건 2.5, 2.0 전부 다 실패했다는 뜻
     return None, "\n".join(error_logs)
 
 @st.cache_data(ttl=600)
@@ -83,8 +70,8 @@ def fetch_market_data():
     except:
         last, chg = None, None
 
-    # 구글 뉴스 (검색어 심플하게 유지)
-    rss_url = "https://news.google.com/rss/search?q=Economy+Finance+Bitcoin&hl=en-US&gl=US&ceid=US:en"
+    # [수정] 뉴스 검색어도 최대한 짧게
+    rss_url = "https://news.google.com/rss/search?q=Finance+Stock&hl=en-US&gl=US&ceid=US:en"
     
     try:
         feed = feedparser.parse(rss_url)
@@ -92,7 +79,8 @@ def fetch_market_data():
             return last, chg, []
             
         scored_news = []
-        for e in feed.entries[:5]:
+        # [핵심 수정] 뉴스를 3개만 가져옴 (토큰 절약)
+        for e in feed.entries[:3]:
             e.title = clean_text(e.title)
             scored_news.append(e)
         return last, chg, scored_news
@@ -104,7 +92,7 @@ def get_article_content(link):
         res = requests.get(link, headers={'User-Agent': 'Mozilla/5.0'}, timeout=4)
         soup = BeautifulSoup(res.content, 'html.parser')
         text = ' '.join([p.get_text() for p in soup.find_all('p')])
-        if len(text) > 200: return text[:3000]
+        if len(text) > 200: return text[:2000] # [수정] 본문 길이도 2000자로 제한
     except:
         pass
     return "원문 접속 불가"
@@ -112,23 +100,23 @@ def get_article_content(link):
 # ==============================================================================
 # [3] UI 로직
 # ==============================================================================
+# [수정] 프롬프트도 다이어트 (짧고 굵게)
 PROMPT_BRIEFING = f"""
-ROLE: Conservative CIO.
+ROLE: CIO.
 DATE: {datetime.now().strftime('%Y-%m-%d')}
-INSTRUCTION: Analyze news. Output in KOREAN.
+TASK: Analyze news in KOREAN.
 FORMAT:
 [MARKET SCORE] (0-100)
-[UPCOMING EVENTS] (3 events)
-[MARKET VIEW] (1 sentence)
-[TRENDING ASSETS] (3 assets)
+[UPCOMING EVENTS] (3 items)
+[MARKET VIEW] (1 line)
+[TRENDING ASSETS] (3 items)
 [NEWS ANALYSIS]
 1. ACTION: (Buy/Sell/Hold) | REASON: ...
 """
 
 PROMPT_DEEP = """
 Analyze in KOREAN.
-GRADE: [S/A/B/C]
-ACTION: [매수/매도/관망] | [Reason]
+ACTION: [Buy/Sell/Hold] | [Reason]
 SUMMARY: -Fact
 RISK: -Risk
 """
@@ -142,36 +130,34 @@ def parse_section(text, header):
         return ""
 
 def main():
-    st.title("☕ Strategic AI Partner")
-    st.caption("Target: Gemini 2.5 / Backup: Gemini 2.0")
+    st.title("☕ Strategic AI Partner (Lite)")
     
     if 'deep_results' not in st.session_state:
         st.session_state['deep_results'] = {}
 
     if 'briefing_data' not in st.session_state:
-        status = st.info("🔄 2.5 모델 호출 중... (실패 시 2.0 전환)")
+        status = st.info("🔄 가벼운 모드로 분석 중...")
         last, chg, news = fetch_market_data()
         
         if not news:
-            status.error("❌ 뉴스 수집 실패 (잠시 후 다시 시도)")
+            status.error("❌ 뉴스 수집 실패")
             st.stop()
             
         st.session_state['market_raw'] = (last, chg, news)
         
-        news_txt = "\n".join([f"[{i+1}] {n.title} ({n.get('published', '')})" for i, n in enumerate(news)])
+        news_txt = "\n".join([f"[{i+1}] {n.title}" for i, n in enumerate(news)])
         
-        # 여기서 릴레이 호출 시작
         ai_res, success_model = call_ai_relay(f"{PROMPT_BRIEFING}\n{news_txt}")
         
         if ai_res:
             st.session_state['briefing_data'] = ai_res
-            st.success(f"✅ 완료! (수행한 모델: {success_model})")
+            st.success(f"✅ 완료 ({success_model})")
             time.sleep(1)
             status.empty()
         else:
-            status.error("모든 모델(2.5, 2.0)이 응답하지 않습니다.")
-            st.warning("현재 구글 서버 요청량이 많습니다. 30초 뒤에 다시 시도해주세요.")
-            st.code(success_model) # 여기에 에러 로그 출력
+            status.error("현재 서버 혼잡도가 매우 높습니다. (429 Error)")
+            st.warning("팁: 우측 상단 'Reboot app'을 눌러서 서버(IP)를 바꿔보세요.")
+            st.code(success_model)
             st.stop()
 
     last, chg, news = st.session_state.get('market_raw', (None, None, []))
@@ -212,11 +198,10 @@ def main():
                 st.markdown(st.session_state['deep_results'][i])
             else:
                 body = get_article_content(n.link)
-                # 정밀 분석도 똑같이 릴레이 적용
                 det, succ_model = call_ai_relay(f"{PROMPT_DEEP}\n{body}")
                 if det: 
                     st.session_state['deep_results'][i] = det
-                    st.success(f"분석 완료 ({succ_model})")
+                    st.success(f"완료 ({succ_model})")
                     st.rerun()
                 else: 
                     st.error(succ_model)
