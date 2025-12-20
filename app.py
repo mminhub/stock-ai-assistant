@@ -20,7 +20,7 @@ if "GOOGLE_API_KEY" not in st.secrets:
     st.stop()
 
 API_KEY = st.secrets["GOOGLE_API_KEY"]
-RELAY_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"]
+RELAY_MODELS = ["gemini-1.5-flash"]
 
 # ==============================================================================
 # [2] 프롬프트 및 유틸리티
