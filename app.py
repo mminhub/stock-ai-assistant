@@ -11,17 +11,16 @@ from bs4 import BeautifulSoup
 # ==============================================================================
 # [1] 설정 & 보안
 # ==============================================================================
-st.set_page_config(page_title="AI 주식 과외 선생님", layout="wide")
+st.set_page_config(page_title="AI 주식 과외 선생님 (Original Only)", layout="wide")
 
-# 1. 로그인 (보안)
 def check_password():
     if "password_correct" not in st.session_state:
         st.session_state["password_correct"] = False
     if st.session_state["password_correct"]:
         return True
     
-    st.title("🔒 로그인 (Authorized Access Only)")
-    password = st.text_input("비밀번호를 입력하세요", type="password")
+    st.title("🔒 로그인")
+    password = st.text_input("비밀번호", type="password")
     if st.button("접속"):
         if "APP_PASSWORD" in st.secrets and password == st.secrets["APP_PASSWORD"]:
             st.session_state["password_correct"] = True
@@ -41,11 +40,11 @@ API_KEY = st.secrets["GOOGLE_API_KEY"]
 RELAY_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash-exp"]
 
 # ==============================================================================
-# [2] AI 엔진 (한국어 & 용어 설명 특화)
+# [2] AI 엔진 (원문 분석 필수)
 # ==============================================================================
 def clean_text(text):
     if not text: return ""
-    text = re.sub(r'<[^>]+>', '', text) # HTML 태그 제거
+    text = re.sub(r'<[^>]+>', '', text)
     return re.sub(r'[\[\]\{\}\"]', '', text).strip()
 
 def call_ai_relay(prompt):
@@ -61,9 +60,7 @@ def call_ai_relay(prompt):
                 if res.status_code == 200:
                     return res.json()['candidates'][0]['content']['parts'][0]['text'], model
                 elif res.status_code == 429:
-                    wait_time = 10 * (attempt + 1)
-                    # UI에 방해되지 않게 조용히 대기
-                    time.sleep(wait_time) 
+                    time.sleep(5)
                     continue
                 else:
                     continue
@@ -82,79 +79,105 @@ def fetch_market_data():
     except:
         last, chg = None, None
 
-    # 구글 뉴스 (영어 뉴스지만 AI가 한국어로 번역할 것임)
-    rss_url = "https://news.google.com/rss/search?q=Finance+Stock+Market&hl=en-US&gl=US&ceid=US:en"
+    # 구글 뉴스
+    rss_url = "https://news.google.com/rss/search?q=Finance+Stock&hl=en-US&gl=US&ceid=US:en"
     
     try:
         feed = feedparser.parse(rss_url)
         if not feed.entries: return last, chg, []
         scored_news = []
         for e in feed.entries[:3]:
-            # [핵심] 제목과 함께 '요약(Snippet)'도 미리 저장해둠 (원문 접속 실패 대비)
             e.title = clean_text(e.title)
-            e['summary_clean'] = clean_text(e.get('summary', ''))
             scored_news.append(e)
         return last, chg, scored_news
     except:
         return last, chg, []
 
-def get_article_content(link, summary_backup):
+# 👇 [핵심 수정] 은신술(Stealth) 기술 적용 함수
+def get_article_content(link):
     """
-    원문 크롤링을 시도하되, 실패하면 RSS에 있던 요약본을 리턴합니다.
-    절대 빈 손으로 돌아가지 않습니다.
+    뉴스 사이트의 차단을 뚫고 진짜 원문을 가져오는 함수.
+    1. 헤더 위조 (사람인 척)
+    2. 세션 유지
+    3. 최종 URL 추적
     """
+    # 1. 완벽한 사람 흉내 (크롬 브라우저 헤더)
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9,ko;q=0.8',
+        'Referer': 'https://www.google.com/'
+    }
+    
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        res = requests.get(link, headers=headers, timeout=3)
+        # 세션 시작 (쿠키 유지)
+        session = requests.Session()
+        
+        # 2. 구글 뉴스 링크 접속 -> 진짜 뉴스 사이트로 리다이렉트 추적
+        res = session.get(link, headers=headers, timeout=10, allow_redirects=True)
+        
+        # 접속 성공 (200 OK)
         if res.status_code == 200:
             soup = BeautifulSoup(res.content, 'html.parser')
-            text = ' '.join([p.get_text() for p in soup.find_all('p')])
-            if len(text) > 200: 
-                return text[:2500] # 너무 길면 자름
-    except:
-        pass
-    
-    # 크롤링 실패 시, 백업해둔 요약본 리턴 (비상용)
-    return f"[원문 접속 차단됨. 요약본으로 대체합니다]\n{summary_backup}"
+            
+            # 3. 본문 추출 알고리즘 (p 태그만 싹 긁어모으기)
+            paragraphs = soup.find_all('p')
+            
+            # 너무 짧은 문장(광고, 메뉴 등)은 버리고, 긴 문장만 수집
+            text_content = []
+            for p in paragraphs:
+                text = p.get_text().strip()
+                if len(text) > 30: # 30자 이상인 의미 있는 문장만
+                    text_content.append(text)
+            
+            full_text = ' '.join(text_content)
+            
+            if len(full_text) > 200: 
+                return f"[원문 확보 성공]\n{full_text[:3500]}" # 너무 길면 3500자에서 자름
+            else:
+                return f"Error: 본문을 찾았으나 내용이 너무 짧습니다. (보안이 강력한 사이트일 수 있음)\nStatus: {res.status_code}"
+                
+        else:
+            return f"Error: 사이트 접속 거부 (Status Code: {res.status_code})"
+            
+    except Exception as e:
+        return f"Error: 크롤링 중 에러 발생 ({str(e)})"
 
 # ==============================================================================
-# [3] 프롬프트 (한국어 강제 & 용어 설명 추가)
+# [3] 프롬프트 (엄격한 분석)
 # ==============================================================================
 PROMPT_BRIEFING = f"""
-You are a friendly AI Investment Tutor for a college student beginner.
-Current Date: {datetime.now().strftime('%Y-%m-%d')}
-
-TASK: Analyze the news headlines and summaries below.
-LANGUAGE: **KOREAN ONLY** (Translate everything to Korean).
+ROLE: Friendly Investment Tutor.
+DATE: {datetime.now().strftime('%Y-%m-%d')}
+TASK: Analyze news headlines in KOREAN.
 
 FORMAT:
-[시장 점수] (0~100점, 점수가 높을수록 안전/호황)
-[주요 일정] (앞으로 있을 경제 일정 3개)
-[시장 한줄평] (친구에게 말하듯 쉬운 말투로)
-[요즘 뜨는 테마] (주목할만한 섹터 3개)
+[시장 점수] (0~100)
+[주요 일정] (3 items)
+[시장 한줄평] (Friendly tone)
+[요즘 뜨는 테마] (3 items)
 [뉴스 3줄 요약]
-1. (뉴스 제목) -> (호재/악재/중립) : 이유
-2. ...
-3. ...
+1. (Title) -> (호재/악재)
 """
 
 PROMPT_DEEP = """
-You are a friendly Investment Tutor.
-Analyze the provided text in **KOREAN**.
+ROLE: Investment Tutor.
+TASK: Analyze the **ORIGINAL ARTICLE TEXT** provided below.
+LANGUAGE: **KOREAN ONLY**.
 
-Target Audience: A college student who is new to stocks.
-1. **Translate** complex financial terms into easy Korean concepts.
-2. If the text is short (summary only), analyze based on that.
+🚨 **INSTRUCTION:**
+1. Analyze based ONLY on the provided text.
+2. If the text starts with "Error:", explain WHY you cannot analyze (e.g., "Site blocked access").
+3. Do NOT guess if there is an Error.
 
 OUTPUT FORMAT:
 **📢 판단:** [매수 / 매도 / 관망]
-**💡 이유:** (초보자가 이해하기 쉽게 설명)
-**📉 리스크:** (조심해야 할 점)
+**💡 이유:** (Summarize the key facts from the text)
+**📉 리스크:** (Risks mentioned in the text)
 
 ---
 **🔰 주린이 용어 사전**
-(Pick 2-3 difficult financial terms from the text and explain them simply. 
-Example: 'CPI' means Consumer Price Index, which shows inflation...)
+(Explain 2 difficult terms found in the text)
 """
 
 def parse_section(text, header):
@@ -175,39 +198,35 @@ def main():
                 st.session_state["password_correct"] = False
                 st.rerun()
 
-    st.title("🎓 내 손안의 AI 주식 과외 선생님")
-    st.caption("어려운 영어 뉴스도 한국어로 쉽게, 모르는 용어는 친절하게!")
-
+    st.title("🎓 AI 주식 과외 선생님 (정밀 분석반)")
+    st.caption("뉴스 원문을 직접 뚫고 들어가서 팩트만 분석합니다.")
+    
     if 'deep_results' not in st.session_state:
         st.session_state['deep_results'] = {}
 
     if 'briefing_data' not in st.session_state:
-        status = st.info("🔄 선생님이 뉴스 읽는 중... (잠시만 기다려주세요)")
+        status = st.info("🔄 뉴스 헤드라인 수집 중...")
         last, chg, news = fetch_market_data()
         
         if not news:
-            status.error("❌ 뉴스를 가져오지 못했어요.")
+            status.error("❌ 뉴스 수집 실패")
             st.stop()
             
         st.session_state['market_raw'] = (last, chg, news)
         
-        # 제목 + 요약본을 같이 보냄
-        news_txt = "\n".join([f"[{i+1}] {n.title}\n(Summary: {n.summary_clean})" for i, n in enumerate(news)])
-        
+        news_txt = "\n".join([f"[{i+1}] {n.title}" for i, n in enumerate(news)])
         ai_res, _ = call_ai_relay(f"{PROMPT_BRIEFING}\n{news_txt}")
         
         if ai_res:
             st.session_state['briefing_data'] = ai_res
             status.empty()
-            st.toast("분석이 완료되었습니다!")
         else:
-            status.error("분석에 실패했습니다. (서버 혼잡)")
+            status.error("서버 혼잡 (잠시 후 다시 시도)")
             st.stop()
 
     last, chg, news = st.session_state.get('market_raw', (None, None, []))
     briefing = st.session_state.get('briefing_data', "")
 
-    # 지표 표시
     if last is not None:
         cols = st.columns(6)
         metrics = [("미국 국채 10년", '^TNX'), ("공포지수(VIX)", '^VIX'), ("S&P 500", '^GSPC'), 
@@ -219,69 +238,53 @@ def main():
 
     st.divider()
 
-    # 파싱
     score_txt = parse_section(briefing, "[시장 점수]")
     view_txt = parse_section(briefing, "[시장 한줄평]")
     events_txt = parse_section(briefing, "[주요 일정]")
     trending_txt = parse_section(briefing, "[요즘 뜨는 테마]")
     news_summary_txt = parse_section(briefing, "[뉴스 3줄 요약]")
 
-    # 메인 대시보드
     c1, c2 = st.columns([1, 3])
     with c1:
-        try:
-            score = int(re.search(r'\d+', score_txt).group())
-        except: score = 50
-        st.metric("오늘의 시장 점수", f"{score}점")
-        st.progress(score)
+        st.metric("오늘의 시장 점수", score_txt[:3] if score_txt else "50")
     with c2:
-        st.info(f"🗣️ **선생님 한마디:** {view_txt}")
+        st.info(f"🗣️ {view_txt}")
 
-    with st.expander("📅 주요 일정 & 테마 보따리", expanded=True):
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.markdown("**[주요 일정]**")
-            st.write(events_txt)
-        with col_b:
-            st.markdown("**[뜨는 테마]**")
-            st.write(trending_txt)
+    with st.expander("📅 일정 & 테마", expanded=True):
+        c_a, c_b = st.columns(2)
+        c_a.write(events_txt)
+        c_b.write(trending_txt)
 
     st.divider()
-    st.subheader("📚 오늘의 뉴스 수업")
-    
-    # 전체 요약 먼저 보여주기
-    if news_summary_txt:
-        st.markdown(news_summary_txt)
-        st.divider()
+    if news_summary_txt: st.write(news_summary_txt)
 
-    # 개별 뉴스 카드
     for i, n in enumerate(news):
-        with st.container():
-            st.markdown(f"#### {i+1}. {n.title}")
-            st.caption(f"원본 링크: {n.link}")
-            
-            # 정밀 분석 버튼
-            if st.button(f"📖 {i+1}번 뉴스 자세히 배우기", key=f"btn_{i}"):
-                with st.spinner("선생님이 원문 읽고 쉽게 풀이하는 중..."):
-                    # 원문 접속 시도 -> 실패하면 요약본 사용 (안전장치)
-                    body_content = get_article_content(n.link, n.summary_clean)
-                    
-                    detail, _ = call_ai_relay(f"{PROMPT_DEEP}\nTitle: {n.title}\nContent: {body_content}")
-                    
-                    if detail:
-                        st.session_state['deep_results'][i] = detail
+        st.divider()
+        st.markdown(f"#### {i+1}. {n.title}")
+        st.caption(f"링크: {n.link}")
+        
+        if st.button(f"📖 {i+1}번 뉴스 원문 분석", key=f"btn_{i}"):
+            with st.spinner("🕵️‍♂️ 원문 사이트 잠입 중... (차단 우회 시도)"):
+                # [핵심] 은신술 함수 호출
+                body = get_article_content(n.link)
+                
+                # 원문 획득 성공 여부 확인
+                if "Error:" in body:
+                    st.error(f"⚠️ 원문 접속 실패: {body}")
+                    st.warning("이 사이트는 보안이 너무 강력해서 로봇 접속을 완벽히 차단했습니다.")
+                else:
+                    det, _ = call_ai_relay(f"{PROMPT_DEEP}\n{body}")
+                    if det:
+                        st.session_state['deep_results'][i] = det
                         st.rerun()
                     else:
-                        st.error("분석 실패 (잠시 후 다시 시도해주세요)")
+                        st.error("AI 분석 실패")
 
-            # 분석 결과 표시
-            if i in st.session_state['deep_results']:
-                with st.chat_message("assistant"):
-                    st.markdown(st.session_state['deep_results'][i])
-        
-        st.divider()
+        if i in st.session_state['deep_results']:
+            with st.chat_message("assistant"):
+                st.markdown(st.session_state['deep_results'][i])
 
-    if st.button("🔄 수업 다시 시작 (새로고침)"):
+    if st.button("🔄 새로고침"):
         st.cache_data.clear()
         if 'briefing_data' in st.session_state: del st.session_state['briefing_data']
         st.rerun()
